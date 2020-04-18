@@ -4,34 +4,18 @@ import rospy, math
 from geometry_msgs.msg import Twist, Quaternion, Point, Pose, Vector3, Vector3Stamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Int16
+from sensor_msgs.msg import Imu
 import tf
 
 import serial
 import sys
 import numpy as np
-from lidar_map_classes_simple import *
 
 class Arduino():
 
     def __init__(self):
         #self.lock = lock
-        self.serial = serial.Serial('/dev/jeep_arduino', baudrate=115200, timeout=2)
-        
-    def safe_write(self, val_str):
-        #self.lock.acquire()
-        self.serial.write(val_str)
-        #self.lock.release()
-
-    def safe_read(self):
-        #self.lock.acquire()
-        val_read_str = self.serial.readline()
-        #self.lock.release()
-        return val_read_str
-class Arduino2():
-
-    def __init__(self):
-        #self.lock = lock
-        self.serial = serial.Serial('/dev/imu_arduino', baudrate=115200, timeout=2)
+        self.serial = serial.Serial('/dev/mowpi_arduino', baudrate=115200, timeout=2)
         
     def safe_write(self, val_str):
         #self.lock.acquire()
@@ -48,101 +32,86 @@ class Controller():
     
     def __init__(self, ard):
         self.ard = ard
-        self.speed = 0
-        self.steer = 570
+        self.speed = 0.0
+        self.curv = 0.0
 
-    def write_speed(self, val):
-        steer_set_right = 'A1/2/875/'
-        motor_stop = 'A1/1/1/0/'
-        self.speed = val
-        if val > 0:
-            val_str = 'A1/1/1/' + str(val) + '/'
-        elif val < 0:
-            val_str = 'A1/1/0/' + str(-val) + '/'
-        else:
-            val_str = motor_stop
-        self.ard.safe_write(val_str)
-        return
+    def write_speed_curv(self, speed_in, curv_in):
+        #  A1/1/<speed_byte> <curv_byte>
+        self.speed = speed_in # m/s
+        self.curv = curv_in # rad/sec
+        #print('speed, curv', speed_in, curv_in)
+        raw_speed = int(speed_in*100.0)+120
+        raw_omega = int(curv_in*180.0/3.14159)+120
+        speed_byte = bytes([ raw_speed & 0xff]) #-120 to 120 cm/sec
+        curv_byte = bytes([ (raw_omega) & 0xff]) # -120 to 120 deg/sec
+        #print('speed_byte, curv_byte', speed_byte, curv_byte)
         
-    def write_steer(self, val):
-        self.steer = val
-        val_str = 'A1/2/' + str(val) + '/'
-        self.ard.safe_write(val_str)
+        self.ard.safe_write('A1/1/' + str(raw_speed) + '/' + str(raw_omega) + '/')
         return
 
-class Jeep():
+class MicroBridge():
     
     def __init__(self):
         
-        rospy.init_node('jeep_comm')
+        rospy.init_node('mowpi_ros_comm')
         
-        twist_cmd_topic = 'cmd_vel'
-        rospy.Subscriber(twist_cmd_topic, Twist, self.drive_callback, queue_size=1)
+        rospy.Subscriber('cmd_vel', Twist, self.drive_callback, queue_size=1)
         rospy.Subscriber('blade_cmd', Int16, self.blade_callback, queue_size=2)
+        rospy.Subscriber('imu', Imu, self.imu_callback, queue_size=2)
         
-        self.cal_pub = rospy.Publisher('imu_cal', Int16, queue_size = 2)
-        self.mag_pub = rospy.Publisher('magXYZ', Vector3Stamped, queue_size = 2)
-        self.accel_pub = rospy.Publisher('accelXYZ', Vector3Stamped, queue_size = 2)
         self.odom_pub = rospy.Publisher('odom', Odometry, queue_size=5)
         self.odom_broadcaster = tf.TransformBroadcaster()
         
         self.ard = Arduino()
-        self.ardIMU = Arduino2()
         self.controller = Controller(self.ard)
-        self.speed = 0
-        self.steer = 570
-        self.bot = MyBot(0,0,0,1,0)
+        self.speed = 0.0
+        self.curv = 0.0
         self.prev_time = rospy.Time.now()
-        self.mag_time = self.prev_time
-        self.dist_sum = 0
-        self.time_sum = 0
-        self.vx = 0
+
+        self.gyroz_rad = 0.0
+
         self.enc_total = 0
         self.roll_rad = 0
         self.pitch_rad = 0
         self.blade_status = -1
         
+        self.dist_sum = 0
+        self.time_sum = 0
+        self.vx = 0
+
+        self.bot_deg = 0
+        self.botx = 0
+        self.boty = 0
+        
+        self.gyro_sum = 0.0
+        self.gyro_count = 0
+        self.gyro_bias_rad = 0.0
+        
     def drive_callback(self, data):
         v = data.linear.x
         w = data.angular.z
+        max_speed = 1.2
+        max_omega = 120*3.14159/180.0
         
-        linear_scale = 0.02
-        wheel_base = 0.76
-        max_steer_deg = 18.0
+        if v > max_speed:
+            v = max_speed
+        elif v < -max_speed:
+            v = -max_speed
         
-        # Turnig Radius limit = 2 meters
-        MAX_CURVATURE = 0.5
-        if(abs(v) < 0.1 and abs(w) > 0.0):
-            v = 1.0*np.sign(v)
-            if(v == 0.0):
-                v = 1.0
-            curv = MAX_CURVATURE*np.sign(w/v)
-        elif(abs(v) > 0):
-            #if(abs(v) < 0.8):
-            #    v = 0.8*np.sign(v)
-            curv = w/v
-            if(abs(curv) > MAX_CURVATURE):
-                curv = MAX_CURVATURE*np.sign(w/v)
-                w = np.sign(curv)*v*MAX_CURVATURE
+        if w > max_omega:
+            w = max_omega
+        elif w < -max_omega:
+            w = -max_omega
         
-        self.speed = int(v / linear_scale)
-        if(abs(v) > 0):
-            steer_angle_deg = -curv * wheel_base * 180.0/3.14
-            self.steer = 570 - int(-steer_angle_deg * 345.0 / max_steer_deg)
+        self.speed = v
+        self.curv = w
         
-        if self.steer < 0:
-            self.steer = 0
-        elif self.steer > 1000:
-            self.steer = 1000
-        if self.speed <> self.controller.speed:
-            self.controller.write_speed(self.speed)
-        
-        if self.steer <> self.controller.steer:
-            self.controller.write_steer(self.steer)
+        if True or self.speed <> self.controller.speed or self.curv <> self.controller.curv:
+            self.controller.write_speed_curv(self.speed, self.curv)
             
-        print("enc_total: ")
-        print(self.enc_total)
-        print('roll rad: ',self.roll_rad, ', pitch rad: ',self.pitch_rad)
+        #print("enc_total: ")
+        #print(self.enc_total)
+        #print('roll rad: ',self.roll_rad, ', pitch rad: ',self.pitch_rad)
     
     def blade_callback(self,bld):
         bld_cmd = bld.data
@@ -157,83 +126,49 @@ class Jeep():
             self.blade_status = 0
             print("blade cmd: ", bld_str)
         
+    def imu_callback(self, data):
+        accx = data.linear_acceleration.x
+        accy = data.linear_acceleration.y
+        self.gyroz_rad = data.angular_velocity.z
+        if(self.gyro_count < 100):
+            self.gyro_count += 1
+            self.gyro_sum += self.gyroz_rad
+            if(self.gyro_count == 100):
+                self.gyro_bias_rad = self.gyro_sum / self.gyro_count
+                print('gyro bias deg: ', self.gyro_bias_rad*180/3.14)
+    
     def update_odom(self):
         t2 = rospy.Time.now()
         t1 = self.prev_time
         dt = (t2-t1).to_sec()
         
-        gyro_thresh = 0.01 #0.05
-        g_bias = 0.0033 #0.016 #0.007
-        MAX_DTHETA_GYRO = 5
+        BOT_WIDTH = (28.0 * 2.54 / 100.0) #meters
+        COUNTS_PER_METER = 157.0
         
-        if( (t2 - self.mag_time).to_sec() >= 0.2 ):
-            self.mag_time = t2
-            self.ardIMU.safe_write('A5/8/')
-            mag_cal = self.ardIMU.safe_read()
-            magx = self.ardIMU.safe_read()
-            magy = self.ardIMU.safe_read()
-            magz = self.ardIMU.safe_read()
-            
-            cal_val = Int16()
-            cal_val.data = int(mag_cal)*5
-            self.cal_pub.publish(cal_val)
-            
-            magXYZ = Vector3Stamped()
-            magXYZ.header.stamp = t2
-            magXYZ.vector.x = float(int(magx)/10.0)
-            magXYZ.vector.y = float(int(magy)/10.0)
-            magXYZ.vector.z = float(int(magz)/10.0)
-            self.mag_pub.publish(magXYZ)
-            
-        try:
-            self.ardIMU.safe_write('A5/1/')
-            accx = self.ardIMU.safe_read()
-            accy = self.ardIMU.safe_read()
-            accz = self.ardIMU.safe_read()
-            self.ardIMU.safe_write('A5/6/')
-            gyroz = self.ardIMU.safe_read()
-            #c = 0
-            #print("gyro z:")
-            #print(gyroz)
-            #while(gyroz == '' and c < 10):
-            #    c = c+1
-            #    gyroz = ardIMU.safe_read()
-            #    print('try gyro again')
-            accx = float(int(accx)-3000)/100.0
-            accy = float(int(accy)-3000)/100.0
-            accz = float(int(accz)-3000)/100.0
-            gyroz = float(int(gyroz)-1000)/100.0
-            
-            accelXYZ = Vector3Stamped()
-            accelXYZ.header.stamp = t2
-            accelXYZ.vector.x = accx
-            accelXYZ.vector.y = accy
-            accelXYZ.vector.z = accz
-            self.accel_pub.publish(accelXYZ)
-        except:
-            accx = 0
-            accy = 0
-            accz = 9.81
-            gyroz = 0
-            print 'IMU error'
-            print "Unexpected Error:", sys.exc_info()[0]
-        finally:
-            a=0
+        # Process gyro z
+        gyro_thresh_dps = 0.04*180/3.14159
+        g_bias_dps = self.gyro_bias_rad*180/3.14159
+        MAX_DTHETA_GYRO_deg = 100.0
+        
+        gyroz_raw_dps = float(self.gyroz_rad) * 180.0 / 3.14159
+        
+        if(abs(gyroz_raw_dps-g_bias_dps) < gyro_thresh_dps):
+            gz_dps = 0
+            dtheta_gyro_deg = 0
+        else:
+            gz_dps = gyroz_raw_dps-g_bias_dps
+            dtheta_gyro_deg = gz_dps*dt*1.002 #*375.0/360.0 #HACK, WHY!!??
             
         # Read encoder delta   
         try: 
             self.ard.safe_write('A3/4/')
             s = self.ard.safe_read()
-            #print("enc: ")
-            #print(s)
-            c = 0
-            #while(s == '' and c < 10):
-            #    c = c +1
-            #    s = ardIMU.safe_read()
-            #    print('try enc again')
-            delta_enc_counts = int(s)
+            delta_enc_left = int(s)
+            s = self.ard.safe_read()
+            delta_enc_right = int(s)
         except:
-            delta_enc_counts = 0
+            delta_enc_left = 0
+            delta_enc_right = 0
             print 'enc error'
             print "Unexpected Error:", sys.exc_info()[0]
         finally:
@@ -241,34 +176,27 @@ class Jeep():
         
         # Update odom
         
+        delta_enc_counts = (delta_enc_left + delta_enc_right)/2
         self.enc_total = self.enc_total + delta_enc_counts
         
-        dmeters = float(delta_enc_counts)/53.0 #53 counts/meter
+        dmeters = float(delta_enc_left + delta_enc_right)/2.0 / COUNTS_PER_METER
         
-        if(abs(gyroz+g_bias) < gyro_thresh):
-            gz_dps = 0
-            dtheta_gyro_deg = 0
-        else:
-            gz_dps = (gyroz+g_bias)*180/3.14*0.97
-            if(gz_dps > 0):
-                gz_dps = gz_dps * 1.0
-            else:
-                gz_dps = gz_dps * 0.98
+        dtheta_enc_deg = float(delta_enc_right - delta_enc_left) / COUNTS_PER_METER / BOT_WIDTH * 180.0 / 3.1416
 
-            dtheta_gyro_deg = gz_dps*dt
-
-        if(abs(dtheta_gyro_deg) > MAX_DTHETA_GYRO):
-            #print 'no gyro'
-            dtheta_deg = 0
-            use_gyro_flag = False
+        if(abs(dtheta_gyro_deg) > MAX_DTHETA_GYRO_deg):
+            print 'no gyro'
+            dtheta_deg = dtheta_enc_deg
         else:
             #print 'use gyro'
             dtheta_deg = dtheta_gyro_deg
-            use_gyro_flag = True
 
         #update bot position
-        self.bot.move(dmeters,dtheta_deg,use_gyro_flag)
-        self.bot.servo_deg = 0
+        self.bot_deg = self.bot_deg + dtheta_deg
+        dx = dmeters*np.cos(self.bot_deg*3.1416/180)
+        dy = dmeters*np.sin(self.bot_deg*3.1416/180)
+        self.botx = self.botx + dx
+        self.boty = self.boty + dy
+        #print 'bot x,y,deg: ', self.bot.botx, self.bot.boty, self.bot.bot_deg
         
         # update bot linear x velocity every 150 msec
         # need to use an np array, then push and pop, moving average
@@ -280,9 +208,9 @@ class Jeep():
             self.time_sum = 0
         
         #bot.botx*100,bot.boty*100,bot.bot_deg
-        odom_quat = tf.transformations.quaternion_from_euler(0, 0, self.bot.bot_deg*3.14/180.0)
+        odom_quat = tf.transformations.quaternion_from_euler(0, 0, self.bot_deg*3.14/180.0)
         self.odom_broadcaster.sendTransform(
-        (self.bot.botx, self.bot.boty, 0.),
+        (self.botx, self.boty, 0.),
         odom_quat,
         t2,
         "base_link",
@@ -294,16 +222,19 @@ class Jeep():
         odom.header.frame_id = "odom"
 
         # set the position
-        odom.pose.pose = Pose(Point(self.bot.botx, self.bot.boty, 0.), Quaternion(*odom_quat))
+        odom.pose.pose = Pose(Point(self.botx, self.boty, 0.), Quaternion(*odom_quat))
 
         # set the velocity
         odom.child_frame_id = "base_link"
+        gz_dps = dtheta_deg / dt
         odom.twist.twist = Twist(Vector3(self.vx, 0, 0), Vector3(0, 0, gz_dps*3.14/180.0))
 
         # publish the message
         self.odom_pub.publish(odom)
         
         ##### USE IMU TO PUBLISH TRANSFORM BETWEEN LASER AND BASE
+        accx = 0
+        accy = 0
         br = tf.TransformBroadcaster()
         if(abs(accx) < 3 and abs(accy) < 3):
             try:
@@ -331,14 +262,14 @@ class Jeep():
 
 if __name__ == '__main__': 
   try:
-    jeep = Jeep()
-    print("starting jeep test")
+    mowpi_bridge = MicroBridge()
+    print("starting mowpi ros comm")
     
     #rospy.spin()
     
-    r = rospy.Rate(50.0)
+    r = rospy.Rate(20.0)
     while not rospy.is_shutdown():
-        jeep.update_odom()
+        mowpi_bridge.update_odom()
         r.sleep()
     
   except rospy.ROSInterruptException:
