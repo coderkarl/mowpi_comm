@@ -68,6 +68,8 @@ class MicroBridge():
         self.curv = 0.0
         self.prev_time = rospy.Time.now()
 
+        self.accx = 0.0
+        self.accy = 0.0
         self.gyroz_rad = 0.0
 
         self.enc_total = 0
@@ -127,8 +129,8 @@ class MicroBridge():
             print("blade cmd: ", bld_str)
         
     def imu_callback(self, data):
-        accx = data.linear_acceleration.x
-        accy = data.linear_acceleration.y
+        self.accx = data.linear_acceleration.x
+        self.accy = data.linear_acceleration.y
         self.gyroz_rad = data.angular_velocity.z
         if(self.gyro_count < 100):
             self.gyro_count += 1
@@ -143,7 +145,7 @@ class MicroBridge():
         dt = (t2-t1).to_sec()
         
         BOT_WIDTH = (28.0 * 2.54 / 100.0) #meters
-        COUNTS_PER_METER = 157.0
+        COUNTS_PER_METER = 162.52
         
         # Process gyro z
         gyro_thresh_dps = 0.04*180/3.14159
@@ -233,13 +235,13 @@ class MicroBridge():
         self.odom_pub.publish(odom)
         
         ##### USE IMU TO PUBLISH TRANSFORM BETWEEN LASER AND BASE
-        accx = 0
-        accy = 0
+        accx = self.accx
+        accy = self.accy
         br = tf.TransformBroadcaster()
         if(abs(accx) < 3 and abs(accy) < 3):
             try:
-                roll_rad = math.asin(accx/9.81) + 0.004 #confirmed with turn-around cal on concrete using rqt_plot
-                pitch_rad = math.asin(accy/9.81) -0.061 - 0.01 #-0.01rad pitch back lidar, #-0.075 for body-ground confirmed with turn-around cal on conrete using rqt_plot
+                roll_rad = math.asin(accx/9.81) + 0.0 #confirm with turn-around cal on concrete using rqt_plot
+                pitch_rad = math.asin(accy/9.81) + 0.0 #confirm with turn-around cal on conrete using rqt_plot
             except:
                 roll_rad = self.roll_rad
                 pitch_rad = self.pitch_rad

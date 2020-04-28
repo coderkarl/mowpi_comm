@@ -1,0 +1,16 @@
+<launch>
+  <include file="$(find jeep_2dnav)/launch/rplidar.launch" />
+
+  <include file="$(find mowpi_comm)/launch/mowpi_filter_scan.launch" />
+
+  <node pkg="mowpi_comm" type="mowpi_ros_comm.py" name="mowpi_comm" output="screen"/>
+  <node pkg="nxp_imu" type="read_nxp.py" name="read_nxp" />
+  
+  <include file="$(find mowpi_comm)/launch/mowpi_gmap_params.launch" />
+
+  <include file="$(find jeep_2dnav)/launch/jeep_move_base_nav.launch" />
+
+  <!-- <node pkg="jeep_ros_comm" type="jeep_local_planner_sim.py" name="jeep_planner" output="screen"/> -->
+  <!-- <node pkg="jeep_2dnav" type="mow_path.py" name="mow_path" output="screen"/> -->
+  
+</launch>
