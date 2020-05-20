@@ -56,9 +56,9 @@ class MowPath():
         
         #general rectangle, start from bot pose
         mx1 = 1.0
-        my1 = -6.0
-        mx2 = 11.0
-        my2 = 3.0
+        my1 = -5.0
+        mx2 = 18.0
+        my2 = 0.0
         
         #first corner, close behind garage, move along y
         #mx1 = -12.5 #-10.0
@@ -221,7 +221,7 @@ class MowPath():
         
         next_wp = PoseStamped()
         next_wp.header.stamp = rospy.Time.now()
-        next_wp.header.frame_id = "map"
+        next_wp.header.frame_id = "odom"
         next_wp.pose.position.x = self.wpx
         next_wp.pose.position.y = self.wpy
         next_wp.pose.position.z = 0.0
@@ -272,7 +272,7 @@ class MowPath():
         
     def update_waypoint(self):
         try:
-            self.transform = self.tf_buffer.lookup_transform("map","base_link", rospy.Time())
+            self.transform = self.tf_buffer.lookup_transform("odom","base_link", rospy.Time())
             #self.transform = self.tf_buffer.waitForTransform("map","laser", msg.header.stamp)
             
             tx = self.transform.transform.translation.x

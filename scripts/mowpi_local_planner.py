@@ -159,7 +159,7 @@ class PathController():
     def execute_plan(self):
         # Update robot pose state from tf listener
         try:
-            (trans,quat) = self.tf_listener.lookupTransform('/map', '/base_link', rospy.Time(0))
+            (trans,quat) = self.tf_listener.lookupTransform('/odom', '/base_link', rospy.Time(0))
             self.state[0] = trans[0]
             self.state[1] = trans[1]
             #quat_list = [quat.x, quat.y, quat.z, quat.w]
