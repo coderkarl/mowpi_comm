@@ -1,8 +1,48 @@
 <launch>
+  # Consider http://wiki.ros.org/laser_filters, scan_to_cloud_filter_chain
+  # Consider: do laser2pc then pc2laser last, so you do NOT clear map when you remove ground points
+  #   Not for now because then I cannot clear false ground readings until I turn around
+
+  <!-- <param name="/use_sim_time" value="true" /> -->
+
+  <node type="laser_scan_assembler" pkg="laser_assembler"
+        name="my_assembler">
+    <remap from="scan" to="base_scan"/>
+    <param name="max_scans" type="int" value="1" />
+    <param name="fixed_frame" type="string" value="base_link" />
+  </node>
+
+  <node type ="laserAsm2pc.py" pkg="mowpi_comm" name="laser2pc"/>
+
+  <node pkg="pointcloud_to_laserscan" type="pointcloud_to_laserscan_node" name="pointcloud_to_laserscan" output="screen">
+    <remap from="scan" to="/scan_high" />
+    <remap from="cloud_in" to="/cloud" />
+    <rosparam>
+        use_inf: false # Trying to NOT cause clearing when removing ground points
+        range_min: 0.3
+        range_max: 70.0 # Trying to NOT cause clearing when removing ground points
+        min_height: -0.35
+        max_height: 5.0
+        scan_time: 0.1
+        angle_min: -3.14159
+        angle_max: 3.14159
+        angle_increment: $(eval 3.14159/180.0)
+        #target_frame: base_link # Leave disabled to output pointcloud in scan frame
+        transform_tolerance: 0.1
+
+        # Concurrency level, affects number of pointclouds queued for processing and number of threads used
+        # 0 : Detect number of cores
+        # 1 : Single threaded
+        # 2->inf : Parallelism level
+        concurrency_level: 1
+    </rosparam>
+  </node>
+
   <node pkg="laser_filters" type="scan_to_scan_filter_chain"
       name="laser_filter">
     <rosparam command="load" file="$(find mowpi_comm)/launch/mowpi_laser_config.yaml" />
-    <remap from="scan" to="base_scan" />
-    <remap from="scan_filtered" to="scan" />
+    <remap from="scan" to="/scan_high" />
+    <remap from="scan_filtered" to="/scan" />
   </node>
+
 </launch>
